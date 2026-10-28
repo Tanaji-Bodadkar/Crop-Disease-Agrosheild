@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import json
+import html
 from pathlib import Path
 
 import joblib
 import streamlit as st
 
 from agroshield.advice import advice_for
-from agroshield.auth import authenticate_user, register_user
+from agroshield.auth import (
+    EmailVerificationError,
+    authenticate_user,
+    begin_existing_verification,
+    begin_registration,
+    resend_verification,
+    verify_email_code,
+)
 from agroshield.features import FEATURE_VERSION, decode_image, extract_features, preprocess
 
 ROOT = Path(__file__).resolve().parent
@@ -36,7 +44,8 @@ def apply_styles() -> None:
         [data-testid="stFileUploader"] { background:#f7fbf8; border:1px dashed #a8c8b6; border-radius:16px; padding:.45rem; }
         div.stButton > button[kind="primary"], div.stFormSubmitButton > button[kind="primary"] { background:var(--ag-green); border-color:var(--ag-green); border-radius:10px; font-weight:700; min-height:2.8rem; }
         .brand-lockup { display:flex; align-items:center; gap:12px; margin:0 0 2rem; }
-        .brand-mark { width:44px;height:44px;border-radius:14px;background:var(--ag-deep);color:white;display:flex;align-items:center;justify-content:center;font-size:23px; }
+        .brand-mark { width:46px;height:46px;border-radius:15px;background:var(--ag-deep);color:white;display:flex;align-items:center;justify-content:center;box-shadow:0 5px 14px rgba(17,63,50,.18); }
+        .brand-mark svg { width:29px;height:29px;display:block; }
         .brand-name { font-family:'Manrope',sans-serif;font-weight:800;font-size:18px;line-height:1.15;color:var(--ag-deep); }
         .brand-tag { color:var(--ag-muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase; }
         .eyebrow { color:var(--ag-green);font-size:.76rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;margin-bottom:.4rem; }
@@ -54,7 +63,7 @@ def apply_styles() -> None:
 
 def brand() -> None:
     st.markdown(
-        '<div class="brand-lockup"><div class="brand-mark">🌱</div><div><div class="brand-name">AgroShield AI</div><div class="brand-tag">Crop health workspace</div></div></div>',
+        '<div class="brand-lockup"><div class="brand-mark" aria-label="AgroShield leaf logo"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M25.8 5.5C15.1 5.6 8.1 8.3 6.1 15.1c-1.1 3.9 1.4 7.2 5.2 7.2 7.8 0 12.9-7.2 14.5-16.8Z" fill="#BDE6C9"/><path d="M5.4 27c3.4-7.1 8.1-11.6 15.1-15.8" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/><path d="M15.2 18.1c-.2-3.5-1.8-5.9-4.6-7.4M10.5 22c3.6.5 6.2-.4 8-2.7" stroke="#fff" stroke-width="1.7" stroke-linecap="round"/></svg></div><div><div class="brand-name">AgroShield AI</div><div class="brand-tag">Crop health workspace</div></div></div>',
         unsafe_allow_html=True,
     )
 
@@ -98,12 +107,22 @@ def render_auth() -> None:
                 password = st.text_input("Password", type="password", autocomplete="current-password")
                 submitted = st.form_submit_button("Sign in", type="primary", use_container_width=True)
             if submitted:
-                profile = authenticate_user(email, password)
-                if profile:
-                    st.session_state["agro_user"] = profile
-                    st.session_state.pop("assessment_result", None)
-                    st.rerun()
-                st.error("We couldn't sign you in with those details. Check your email and password, or create an account.")
+                try:
+                    profile = authenticate_user(email, password)
+                    if profile and profile["email_verified"]:
+                        st.session_state["agro_user"] = {"email": profile["email"], "full_name": profile["full_name"]}
+                        st.session_state.pop("assessment_result", None)
+                        st.session_state.pop("email_to_verify", None)
+                        st.rerun()
+                    if profile and not profile["email_verified"]:
+                        begin_existing_verification(email, password)
+                        st.session_state["email_to_verify"] = email.strip().casefold()
+                        st.rerun()
+                    st.error("We couldn't sign you in with those details. Check your email and password, or create an account.")
+                except EmailVerificationError as exc:
+                    st.error(str(exc))
+                except OSError:
+                    st.error("We couldn't access the account database. Check that the app can write to its data folder.")
 
         with signup_tab:
             with st.form("create_account_form"):
@@ -112,32 +131,67 @@ def render_auth() -> None:
                 password = st.text_input("Create password", type="password", autocomplete="new-password", key="signup_password")
                 confirm = st.text_input("Confirm password", type="password", autocomplete="new-password", key="signup_confirm")
                 st.caption("Use at least 10 characters. Your password is stored as a salted hash.")
-                submitted = st.form_submit_button("Create my workspace", type="primary", use_container_width=True)
+                submitted = st.form_submit_button("Send verification code", type="primary", use_container_width=True)
             if submitted:
                 if password != confirm:
                     st.error("The passwords do not match. Please try again.")
                 else:
                     try:
-                        profile = register_user(name, email, password)
+                        verified_email = begin_registration(name, email, password)
+                    except EmailVerificationError as exc:
+                        st.error(str(exc))
                     except ValueError as exc:
                         st.error(str(exc))
                     except OSError:
                         st.error("We couldn't create the account database. Check that the app can write to its data folder.")
                     else:
-                        st.session_state["agro_user"] = profile
-                        st.session_state.pop("assessment_result", None)
+                        st.session_state["email_to_verify"] = verified_email
+                        st.success(f"We sent a six-digit code to {verified_email}.")
                         st.rerun()
+
+        pending_email = st.session_state.get("email_to_verify")
+        if pending_email:
+            st.divider()
+            st.markdown("**Verify your email**")
+            st.caption(f"Enter the six-digit code sent to `{pending_email}`. It expires in 10 minutes.")
+            with st.form("email_verification_form"):
+                code = st.text_input("Email verification code", max_chars=6, placeholder="000000", autocomplete="one-time-code")
+                verify_submitted = st.form_submit_button("Verify email and enter", type="primary", use_container_width=True)
+            if verify_submitted:
+                try:
+                    profile = verify_email_code(pending_email, code)
+                except (EmailVerificationError, ValueError) as exc:
+                    st.error(str(exc))
+                except OSError:
+                    st.error("We couldn't access the account database. Please try again.")
+                else:
+                    st.session_state["agro_user"] = profile
+                    st.session_state.pop("email_to_verify", None)
+                    st.rerun()
+            resend_col, cancel_col = st.columns(2)
+            with resend_col:
+                if st.button("Resend code", use_container_width=True):
+                    try:
+                        resend_verification(pending_email)
+                    except (EmailVerificationError, ValueError) as exc:
+                        st.error(str(exc))
+                    else:
+                        st.success("A new verification code has been sent.")
+            with cancel_col:
+                if st.button("Cancel verification", use_container_width=True):
+                    st.session_state.pop("email_to_verify", None)
+                    st.rerun()
+            st.caption("Check your spam folder if you don't see the message. You can request another code after 60 seconds.")
     st.divider()
     st.caption("AgroShield AI is an academic prototype. It does not provide a confirmed diagnosis or pesticide prescription.")
 
 
 def render_sidebar(profile: dict[str, str]) -> str:
     with st.sidebar:
-        brand()
         st.markdown(f"**{profile['full_name']}**")
         st.caption(profile["email"])
         if st.button("Sign out", use_container_width=True):
-            for key in ("agro_user", "assessment_result"):
+            for key in ("agro_user", "assessment_result", "email_to_verify"):
                 st.session_state.pop(key, None)
             st.session_state["upload_form_version"] = st.session_state.get("upload_form_version", 0) + 1
             st.rerun()
@@ -277,7 +331,7 @@ def render_assessment(profile: dict[str, str]) -> None:
                 st.warning(f"The top class is for {result['predicted_crop']}. Check that the crop type entered above is correct.")
             advice = result["advice"]
             st.markdown('<div class="section-title">Model result</div>', unsafe_allow_html=True)
-            st.markdown(f'<span class="result-label">{advice["title"]}</span>', unsafe_allow_html=True)
+            st.markdown(f'<span class="result-label">{html.escape(advice["title"])}</span>', unsafe_allow_html=True)
             st.metric("Model score (uncalibrated)", f"{result['score']:.1%}")
             st.caption("This score is not a calibrated probability or a confirmed diagnosis.")
             st.info(advice["summary"])
@@ -340,6 +394,7 @@ def main() -> None:
         render_auth()
         return
     page = render_sidebar(profile)
+    brand()
     if page == "New assessment":
         render_assessment(profile)
     else:

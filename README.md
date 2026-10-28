@@ -4,6 +4,7 @@ AgroShield AI is a Streamlit prototype for plant leaf disease screening. Users c
 
 ## Features
 
+- Email verification by six-digit, expiring code before an account can sign in
 - Registration and sign-in with salted PBKDF2 password hashes
 - Responsive workspace with image upload and crop/symptom description
 - Image validation, RGB preprocessing, and disease classification
@@ -23,7 +24,22 @@ pip install -r requirements.txt
 python -m streamlit run app.py
 ```
 
-Open the Local URL printed by Streamlit. The first account can be created from the **Create account** tab.
+Open the Local URL printed by Streamlit. Create an account in the **Create account** tab, then enter the six-digit code sent to your email to verify the address and finish registration.
+
+## Configure email verification
+
+The app sends verification codes through SMTP. For local development, create `.streamlit/secrets.toml` (this file is ignored by Git) and add your mail provider's SMTP credentials:
+
+```toml
+[email]
+smtp_host = "smtp.gmail.com"
+smtp_port = 587
+smtp_username = "your-sender@gmail.com"
+smtp_password = "your-provider-app-password"
+from_email = "your-sender@gmail.com"
+```
+
+Use an app password or provider-issued SMTP credential; do not use or commit your normal email account password. For Streamlit Community Cloud, add the same values under **App settings → Secrets**. Without these settings, account registration and verification-code delivery remain unavailable.
 
 ## Model and dataset
 
@@ -40,7 +56,7 @@ The model is a scikit-learn Random Forest over handcrafted HSV color histograms 
 
 ## Account storage and deployment
 
-This prototype stores account records in `data/users.sqlite3`; passwords are salted and hashed. The database is excluded from Git. SQLite on a single app instance is suitable for a classroom/local demonstration, but Streamlit Community Cloud's local filesystem is not a durable account database. For a public multi-user deployment, connect a managed identity provider and persistent database before inviting users to register. Do not commit account databases, passwords, or secrets.
+This prototype stores account records and short-lived verification state in `data/users.sqlite3`; passwords are salted and hashed, and verification codes expire after 10 minutes and are limited to five attempts. The database is excluded from Git. SQLite on a single app instance is suitable for a classroom/local demonstration, but Streamlit Community Cloud's local filesystem is not a durable account database. For a public multi-user deployment, connect a managed identity provider and persistent database before inviting users to register. Do not commit account databases, passwords, or secrets.
 
 ## Limitations
 
