@@ -1,9 +1,14 @@
+.venv/
 __pycache__/
 *.py[cod]
-.venv/
-.venv*/
 .streamlit/secrets.toml
 data/raw/
 data/*.zip
 data/*.part
+data/*.sqlite3
+data/*.sqlite3-*
+data/*.db
+data/*.db-*
 artifacts/*.joblib
+artifacts/*.json
+artifacts/*.csv

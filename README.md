@@ -1,39 +1,47 @@
-# AgroShield AI — Plant Disease Detection Prototype
+# AgroShield AI
 
-A Streamlit prototype for classifying supported plant leaf disease classes from an uploaded image. It preprocesses the image, extracts color and gradient features, predicts a class with a scikit-learn Random Forest, and displays general educational prevention guidance.
+AgroShield AI is a Streamlit prototype for plant leaf disease screening. Users create an account or sign in, open a private workspace, upload a leaf image, and describe the crop and symptoms. If a trained model is present, the app returns a predicted dataset class and cautious general guidance.
 
-## Project contents
+## Features
 
-- `app.py` — Streamlit interface
-- `agroshield/` — image feature extraction and general guidance
-- `scripts/train_model.py` — training, holdout evaluation, and model export
-- `scripts/download_plantvillage.py` — dataset download and extraction helper
-- `docs/AgroShield_AI_Project_Report.docx` — final project report
-- `artifacts/metrics.json`, `artifacts/confusion_matrix.csv` — recorded evaluation output
+- Registration and sign-in with salted PBKDF2 password hashes
+- Responsive workspace with image upload and crop/symptom description
+- Image validation, RGB preprocessing, and disease classification
+- General next steps and downloadable assessment summary
+- No image or assessment history is saved; the active session holds the uploaded image and notes
 
-The trained model is not committed because it is about 202 MB. The dataset is also not committed (about 868 MB). Download the dataset and train the model locally using the steps below.
+## Run locally on Windows
 
-## Run on Windows PowerShell
-
-Use Python 3.10 or newer from this repository folder:
+From PowerShell:
 
 ```powershell
-py -3.10 -m venv .venv
+cd "E:\MIT\MDM PROJECT\AgroShield_AI"
+py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-python scripts\download_plantvillage.py
-python scripts	rain_model.py --data-dir dataaw
 python -m streamlit run app.py
 ```
 
-If the dataset archive has already been downloaded, place/extract it so that `data\raw` contains the class folders, then run the training and Streamlit commands. A local trained model is written to `artifacts/agroshield_model.joblib`.
+Open the Local URL printed by Streamlit. The first account can be created from the **Create account** tab.
 
-## Dataset
+## Model and dataset
 
-Training data: [Plant Leaf Diseases Dataset (Mendeley Data)](https://data.mendeley.com/datasets/tywbtsjrjv/1), J. Arun Pandian and Geetharamani Gopal (2019), DOI: 10.17632/tywbtsjrjv.1. The recorded training run used 18,410 images across 39 classes, with a stratified 80/20 split (14,728 train, 3,682 holdout). It achieved 89.11% accuracy and 0.8899 macro F1 on that holdout.
+The trained model is not included in this repository because it is about 202 MB. The PlantVillage archive is also excluded because it is about 868 MB. To create a local model, download the [Plant Leaf Diseases Dataset](https://data.mendeley.com/datasets/tywbtsjrjv/1) and train it:
 
-## Notes and limitations
+```powershell
+python scripts\download_plantvillage.py
+python scripts\train_model.py --data-dir data\raw
+```
 
-The model is a Random Forest over handcrafted HSV color histograms and spatial gradient-orientation histograms. Its displayed class score is not a calibrated probability. PlantVillage-style images may differ from field photographs in lighting, backgrounds, and image quality. Validate on independent field images before relying on results. Severity is not predicted. Guidance is general education, not a diagnosis or pesticide prescription; consult an agricultural expert for decisions.
+The recorded baseline used 18,410 images across 39 classes, with a stratified 80/20 split. It achieved 89.11% accuracy and 0.8899 macro F1 on a 3,682-image holdout. See `artifacts/metrics.json` and `artifacts/confusion_matrix.csv` for the detailed report.
 
+The model is a scikit-learn Random Forest over handcrafted HSV color histograms and spatial gradient-orientation histograms. Its class score is not a calibrated probability. The benchmark does not establish accuracy on field photographs, and severity is not predicted.
+
+## Account storage and deployment
+
+This prototype stores account records in `data/users.sqlite3`; passwords are salted and hashed. The database is excluded from Git. SQLite on a single app instance is suitable for a classroom/local demonstration, but Streamlit Community Cloud's local filesystem is not a durable account database. For a public multi-user deployment, connect a managed identity provider and persistent database before inviting users to register. Do not commit account databases, passwords, or secrets.
+
+## Limitations
+
+Predictions are model-assisted suggestions, not a confirmed diagnosis. Similar symptoms can have different causes. Guidance is educational and is not a pesticide prescription; confirm disease and locally appropriate controls with an agricultural expert or extension service.
