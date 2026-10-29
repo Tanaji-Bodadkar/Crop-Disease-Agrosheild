@@ -1,1 +1,1 @@
-"""Core components for the AgroShield AI prototype."""
+"""Core components for the Agrosheild prototype."""

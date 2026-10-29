@@ -1,4 +1,4 @@
-"""Email-verified local accounts for the AgroShield academic prototype."""
+"""Email-verified local accounts for the Agrosheild academic prototype."""
 
 from __future__ import annotations
 
@@ -111,14 +111,14 @@ def _email_config() -> dict[str, str | int]:
 def _send_code(email: str, full_name: str, code: str) -> None:
     config = _email_config()
     message = EmailMessage()
-    message["Subject"] = "Your AgroShield AI verification code"
+    message["Subject"] = "Your Agrosheild verification code"
     message["From"] = str(config["from_email"])
     message["To"] = email
     message.set_content(
         f"Hello {full_name},\n\n"
-        f"Your AgroShield AI verification code is: {code}\n\n"
+        f"Your Agrosheild verification code is: {code}\n\n"
         "It expires in 10 minutes. If you did not request an account, you can ignore this email.\n\n"
-        "AgroShield AI"
+        "Agrosheild"
     )
     try:
         host = str(config["smtp_host"])

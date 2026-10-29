@@ -4,8 +4,9 @@ import json
 import html
 from pathlib import Path
 
-import joblib
+import torch
 import streamlit as st
+from PIL import Image
 
 from agroshield.advice import advice_for
 from agroshield.auth import (
@@ -16,13 +17,15 @@ from agroshield.auth import (
     resend_verification,
     verify_email_code,
 )
-from agroshield.features import FEATURE_VERSION, decode_image, extract_features, preprocess
+from agroshield.chatbot import answer_crop_question
+from agroshield.cnn import MODEL_VERSION, build_model, eval_transform, IMAGE_SIZE
+from agroshield.features import decode_image
 
 ROOT = Path(__file__).resolve().parent
-MODEL_PATH = ROOT / "artifacts" / "agroshield_model.joblib"
-METRICS_PATH = ROOT / "artifacts" / "metrics.json"
+MODEL_PATH = ROOT / "artifacts" / "agroshield_cnn.pt"
+METRICS_PATH = ROOT / "artifacts" / "cnn_metrics.json"
 
-st.set_page_config(page_title="AgroShield AI", page_icon="🌱", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Agrosheild", page_icon="🌱", layout="wide", initial_sidebar_state="expanded")
 
 
 def apply_styles() -> None:
@@ -35,7 +38,7 @@ def apply_styles() -> None:
         .stApp { background:linear-gradient(180deg,#f6faf7 0%,#ffffff 46%); color:var(--ag-ink); }
         [data-testid="stSidebar"] { background:#f3f8f4; border-right:1px solid var(--ag-line); }
         [data-testid="stSidebar"] > div:first-child { padding-top:1.5rem; }
-        .block-container { max-width:1240px; padding-top:2.1rem; padding-bottom:3rem; }
+        .block-container { max-width:1240px; padding-top:2.7rem; padding-bottom:3rem; }
         h1,h2,h3 { font-family:'Manrope',sans-serif !important; color:var(--ag-deep); letter-spacing:-.035em; }
         h1 { font-size:2.35rem !important; font-weight:800 !important; }
         [data-testid="stMetric"] { background:#fff; border:1px solid var(--ag-line); border-radius:16px; padding:16px 18px; box-shadow:0 5px 18px rgba(17,63,50,.035); }
@@ -48,6 +51,11 @@ def apply_styles() -> None:
         .brand-mark svg { width:29px;height:29px;display:block; }
         .brand-name { font-family:'Manrope',sans-serif;font-weight:800;font-size:18px;line-height:1.15;color:var(--ag-deep); }
         .brand-tag { color:var(--ag-muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase; }
+        .account-profile { display:flex;align-items:center;gap:12px;margin:0 0 12px;padding:12px;background:#fff;border:1px solid var(--ag-line);border-radius:14px; }
+        .account-avatar { flex:0 0 42px;width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--ag-deep);color:#fff;font-family:'Manrope',sans-serif;font-size:15px;font-weight:800;letter-spacing:.03em; }
+        .account-details { min-width:0; }
+        .account-name { color:var(--ag-ink);font-size:.9rem;font-weight:700;line-height:1.3; }
+        .account-email { color:var(--ag-muted);font-size:.75rem;line-height:1.3;overflow-wrap:anywhere;margin-top:3px; }
         .eyebrow { color:var(--ag-green);font-size:.76rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;margin-bottom:.4rem; }
         .muted { color:var(--ag-muted); }
         .hero-panel { background:linear-gradient(125deg,#123f32,#1c7955); color:white; border-radius:22px; padding:24px 28px; margin:1rem 0 1.4rem; }
@@ -63,7 +71,7 @@ def apply_styles() -> None:
 
 def brand() -> None:
     st.markdown(
-        '<div class="brand-lockup"><div class="brand-mark" aria-label="AgroShield leaf logo"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M25.8 5.5C15.1 5.6 8.1 8.3 6.1 15.1c-1.1 3.9 1.4 7.2 5.2 7.2 7.8 0 12.9-7.2 14.5-16.8Z" fill="#BDE6C9"/><path d="M5.4 27c3.4-7.1 8.1-11.6 15.1-15.8" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/><path d="M15.2 18.1c-.2-3.5-1.8-5.9-4.6-7.4M10.5 22c3.6.5 6.2-.4 8-2.7" stroke="#fff" stroke-width="1.7" stroke-linecap="round"/></svg></div><div><div class="brand-name">AgroShield AI</div><div class="brand-tag">Crop health workspace</div></div></div>',
+        '<div class="brand-lockup"><div class="brand-mark" aria-label="Agrosheild leaf logo"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M25.8 5.5C15.1 5.6 8.1 8.3 6.1 15.1c-1.1 3.9 1.4 7.2 5.2 7.2 7.8 0 12.9-7.2 14.5-16.8Z" fill="#BDE6C9"/><path d="M5.4 27c3.4-7.1 8.1-11.6 15.1-15.8" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/><path d="M15.2 18.1c-.2-3.5-1.8-5.9-4.6-7.4M10.5 22c3.6.5 6.2-.4 8-2.7" stroke="#fff" stroke-width="1.7" stroke-linecap="round"/></svg></div><div><div class="brand-name">Agrosheild</div><div class="brand-tag">Crop health workspace</div></div></div>',
         unsafe_allow_html=True,
     )
 
@@ -71,10 +79,14 @@ def brand() -> None:
 @st.cache_resource(show_spinner=False)
 def load_model(path: str, modified: float):
     del modified
-    payload = joblib.load(path)
-    if payload.get("feature_version") != FEATURE_VERSION:
-        raise ValueError("The model was trained with an incompatible image feature version. Retrain it with this project code.")
-    return payload
+    payload = torch.load(path, map_location="cpu", weights_only=True)
+    if payload.get("model") != MODEL_VERSION:
+        raise ValueError("The saved model is incompatible with this app. Train it again with scripts/train_cnn.py.")
+    labels = payload["labels"]
+    model = build_model(len(labels), pretrained=False)
+    model.load_state_dict(payload["state_dict"])
+    model.eval()
+    return {"model": model, "labels": labels, "transform": eval_transform()}
 
 
 def render_auth() -> None:
@@ -93,67 +105,27 @@ def render_auth() -> None:
         )
         a, b, c = st.columns(3)
         a.metric("Supported classes", "39")
-        b.metric("Test accuracy", "89.1%")
+        b.metric("Model", "ResNet18 CNN")
         c.metric("Advice style", "Cautious")
-        st.caption("Benchmark results are from a held-out PlantVillage image split and do not guarantee field performance.")
+        if MODEL_PATH.exists() and METRICS_PATH.exists():
+            try:
+                metrics = json.loads(METRICS_PATH.read_text(encoding="utf-8"))
+                st.caption(f"PlantVillage held-out test accuracy: {metrics['accuracy']:.1%}. Field performance has not been validated.")
+            except (OSError, ValueError, KeyError):
+                st.caption("CNN predictions are enabled; PlantVillage metrics are not available.")
+        else:
+            st.caption("Train the CNN on the PlantVillage dataset to enable predictions and populate the benchmark metrics.")
 
     with right:
         st.subheader("Welcome")
         st.caption("Sign in to your workspace or create an account to get started.")
-        login_tab, signup_tab = st.tabs(["Sign in", "Create account"])
-        with login_tab:
-            with st.form("sign_in_form"):
-                email = st.text_input("Email address", placeholder="you@example.com", autocomplete="email")
-                password = st.text_input("Password", type="password", autocomplete="current-password")
-                submitted = st.form_submit_button("Sign in", type="primary", use_container_width=True)
-            if submitted:
-                try:
-                    profile = authenticate_user(email, password)
-                    if profile and profile["email_verified"]:
-                        st.session_state["agro_user"] = {"email": profile["email"], "full_name": profile["full_name"]}
-                        st.session_state.pop("assessment_result", None)
-                        st.session_state.pop("email_to_verify", None)
-                        st.rerun()
-                    if profile and not profile["email_verified"]:
-                        begin_existing_verification(email, password)
-                        st.session_state["email_to_verify"] = email.strip().casefold()
-                        st.rerun()
-                    st.error("We couldn't sign you in with those details. Check your email and password, or create an account.")
-                except EmailVerificationError as exc:
-                    st.error(str(exc))
-                except OSError:
-                    st.error("We couldn't access the account database. Check that the app can write to its data folder.")
-
-        with signup_tab:
-            with st.form("create_account_form"):
-                name = st.text_input("Full name", placeholder="Your name", autocomplete="name")
-                email = st.text_input("Email address", placeholder="you@example.com", autocomplete="email", key="signup_email")
-                password = st.text_input("Create password", type="password", autocomplete="new-password", key="signup_password")
-                confirm = st.text_input("Confirm password", type="password", autocomplete="new-password", key="signup_confirm")
-                st.caption("Use at least 10 characters. Your password is stored as a salted hash.")
-                submitted = st.form_submit_button("Send verification code", type="primary", use_container_width=True)
-            if submitted:
-                if password != confirm:
-                    st.error("The passwords do not match. Please try again.")
-                else:
-                    try:
-                        verified_email = begin_registration(name, email, password)
-                    except EmailVerificationError as exc:
-                        st.error(str(exc))
-                    except ValueError as exc:
-                        st.error(str(exc))
-                    except OSError:
-                        st.error("We couldn't create the account database. Check that the app can write to its data folder.")
-                    else:
-                        st.session_state["email_to_verify"] = verified_email
-                        st.success(f"We sent a six-digit code to {verified_email}.")
-                        st.rerun()
-
         pending_email = st.session_state.get("email_to_verify")
         if pending_email:
-            st.divider()
-            st.markdown("**Verify your email**")
+            st.subheader("Verify your email")
             st.caption(f"Enter the six-digit code sent to `{pending_email}`. It expires in 10 minutes.")
+            notice = st.session_state.pop("verification_notice", None)
+            if notice:
+                st.info(f"A code was sent recently. {notice} Enter the code you already received, or request a new one after the wait.")
             with st.form("email_verification_form"):
                 code = st.text_input("Email verification code", max_chars=6, placeholder="000000", autocomplete="one-time-code")
                 verify_submitted = st.form_submit_button("Verify email and enter", type="primary", use_container_width=True)
@@ -167,6 +139,7 @@ def render_auth() -> None:
                 else:
                     st.session_state["agro_user"] = profile
                     st.session_state.pop("email_to_verify", None)
+                    st.session_state.pop("verification_notice", None)
                     st.rerun()
             resend_col, cancel_col = st.columns(2)
             with resend_col:
@@ -177,26 +150,93 @@ def render_auth() -> None:
                         st.error(str(exc))
                     else:
                         st.success("A new verification code has been sent.")
+                        st.rerun()
             with cancel_col:
                 if st.button("Cancel verification", use_container_width=True):
                     st.session_state.pop("email_to_verify", None)
+                    st.session_state.pop("verification_notice", None)
                     st.rerun()
             st.caption("Check your spam folder if you don't see the message. You can request another code after 60 seconds.")
+        else:
+            login_tab, signup_tab = st.tabs(["Sign in", "Create account"])
+            with login_tab:
+                with st.form("sign_in_form"):
+                    email = st.text_input("Email address", placeholder="you@example.com", autocomplete="email")
+                    password = st.text_input("Password", type="password", autocomplete="current-password")
+                    submitted = st.form_submit_button("Sign in", type="primary", use_container_width=True)
+                if submitted:
+                    try:
+                        profile = authenticate_user(email, password)
+                        if profile and profile["email_verified"]:
+                            st.session_state["agro_user"] = {"email": profile["email"], "full_name": profile["full_name"]}
+                            st.session_state.pop("assessment_result", None)
+                            st.rerun()
+                        if profile and not profile["email_verified"]:
+                            begin_existing_verification(email, password)
+                            st.session_state["email_to_verify"] = email.strip().casefold()
+                            st.rerun()
+                        st.error("We couldn't sign you in with those details. Check your email and password, or create an account.")
+                    except EmailVerificationError as exc:
+                        if str(exc).startswith("Please wait "):
+                            st.session_state["email_to_verify"] = email.strip().casefold()
+                            st.session_state["verification_notice"] = str(exc)
+                            st.rerun()
+                        st.error(str(exc))
+                    except OSError:
+                        st.error("We couldn't access the account database. Check that the app can write to its data folder.")
+
+            with signup_tab:
+                with st.form("create_account_form"):
+                    name = st.text_input("Full name", placeholder="Your name", autocomplete="name")
+                    email = st.text_input("Email address", placeholder="you@example.com", autocomplete="email", key="signup_email")
+                    password = st.text_input("Create password", type="password", autocomplete="new-password", key="signup_password")
+                    confirm = st.text_input("Confirm password", type="password", autocomplete="new-password", key="signup_confirm")
+                    st.caption("Use at least 10 characters. Your password is stored as a salted hash.")
+                    submitted = st.form_submit_button("Send verification code", type="primary", use_container_width=True)
+                if submitted:
+                    if password != confirm:
+                        st.error("The passwords do not match. Please try again.")
+                    else:
+                        try:
+                            verified_email = begin_registration(name, email, password)
+                        except EmailVerificationError as exc:
+                            if str(exc).startswith("Please wait "):
+                                st.session_state["email_to_verify"] = email.strip().casefold()
+                                st.session_state["verification_notice"] = str(exc)
+                                st.rerun()
+                            st.error(str(exc))
+                        except ValueError as exc:
+                            st.error(str(exc))
+                        except OSError:
+                            st.error("We couldn't create the account database. Check that the app can write to its data folder.")
+                        else:
+                            st.session_state["email_to_verify"] = verified_email
+                            st.rerun()
     st.divider()
-    st.caption("AgroShield AI is an academic prototype. It does not provide a confirmed diagnosis or pesticide prescription.")
+    st.caption("Agrosheild is an academic prototype. It does not provide a confirmed diagnosis or pesticide prescription.")
 
 
 def render_sidebar(profile: dict[str, str]) -> str:
     with st.sidebar:
-        st.markdown(f"**{profile['full_name']}**")
-        st.caption(profile["email"])
+        full_name = profile.get("full_name", "").strip()
+        email_address = profile.get("email", "").strip()
+        initials = "".join(part[0] for part in full_name.split()[:2]).upper() or email_address[:1].upper() or "U"
+        st.markdown(
+            '<div class="account-profile">'
+            f'<div class="account-avatar" aria-label="Account initials {html.escape(initials)}">{html.escape(initials)}</div>'
+            '<div class="account-details">'
+            f'<div class="account-name">{html.escape(full_name or "Agrosheild user")}</div>'
+            f'<div class="account-email">{html.escape(email_address)}</div>'
+            '</div></div>',
+            unsafe_allow_html=True,
+        )
         if st.button("Sign out", use_container_width=True):
-            for key in ("agro_user", "assessment_result", "email_to_verify"):
+            for key in ("agro_user", "assessment_result", "email_to_verify", "verification_notice", "crop_chat_messages"):
                 st.session_state.pop(key, None)
             st.session_state["upload_form_version"] = st.session_state.get("upload_form_version", 0) + 1
             st.rerun()
         st.divider()
-        page = st.radio("Workspace", ["New assessment", "How it works", "Account"], label_visibility="collapsed")
+        page = st.radio("Workspace", ["New assessment", "Crop agent", "How it works", "Account"], label_visibility="collapsed")
         st.divider()
         if MODEL_PATH.exists():
             st.success("AI model ready")
@@ -217,10 +257,10 @@ def show_model_setup() -> None:
     st.markdown("To enable predictions, install the project dependencies, download the dataset, and train the model:")
     st.code(
         "python scripts/download_plantvillage.py\n"
-        "python scripts/train_model.py --data-dir data/raw",
+        "python scripts/train_cnn.py --data-dir data/raw --epochs 4",
         language="powershell",
     )
-    st.caption("The assessment form is available, but AgroShield will not invent a prediction when the model file is missing.")
+    st.caption("The assessment form is available, but predictions require the trained ResNet18 CNN checkpoint.")
 
 
 def analyze_upload(uploaded, crop: str, description: str) -> dict:
@@ -237,16 +277,16 @@ def analyze_upload(uploaded, crop: str, description: str) -> dict:
         return result
 
     model_payload = load_model(str(MODEL_PATH), MODEL_PATH.stat().st_mtime)
-    prepared = preprocess(image)
-    feature = extract_features(prepared).reshape(1, -1)
-    scores = model_payload["model"].predict_proba(feature)[0]
+    model_input = model_payload["transform"](image).unsqueeze(0)
+    with torch.inference_mode():
+        scores = torch.softmax(model_payload["model"](model_input), dim=1)[0].numpy()
     order = scores.argsort()[::-1][:3]
     labels = model_payload["labels"]
     winner = labels[int(order[0])]
     predicted_crop = winner.split("___", 1)[0].replace("_", " ")
     result.update(
         {
-            "prepared": prepared,
+            "prepared": image.resize((IMAGE_SIZE, IMAGE_SIZE), Image.Resampling.LANCZOS),
             "prediction": winner,
             "predicted_crop": predicted_crop,
             "score": float(scores[order[0]]),
@@ -310,7 +350,7 @@ def render_assessment(profile: dict[str, str]) -> None:
             "- Include the crop name and when symptoms began.\n"
             "- Note whether other plants show similar changes."
         )
-        st.info("AgroShield gives a model-assisted first look. Confirm disease and treatment decisions with a local agricultural expert.")
+        st.info("Agrosheild gives a model-assisted first look. Confirm disease and treatment decisions with a local agricultural expert.")
 
     result = st.session_state.get("assessment_result")
     if not result:
@@ -341,7 +381,7 @@ def render_assessment(profile: dict[str, str]) -> None:
             st.markdown("**Other likely classes**")
             st.dataframe(result["top_results"], hide_index=True, use_container_width=True)
             report = {
-                "project": "AgroShield AI",
+                "project": "Agrosheild",
                 "crop_entered": result["crop"],
                 "field_description": result["description"],
                 "image_size": {"width": result["width"], "height": result["height"]},
@@ -354,17 +394,80 @@ def render_assessment(profile: dict[str, str]) -> None:
             st.download_button(
                 "Download assessment summary",
                 json.dumps(report, indent=2),
-                file_name="agroshield-assessment.json",
+                file_name="agrosheild-assessment.json",
                 mime="application/json",
             )
+
+
+def render_crop_assistant(profile: dict[str, str]) -> None:
+    st.markdown('<div class="eyebrow">Agrosheild crop agent</div>', unsafe_allow_html=True)
+    st.title(f"How can I help, {profile['full_name'].split()[0]}?")
+    st.caption("The agent combines your CNN result with Agrosheild’s curated guidance. Chat stays in this session.")
+    st.info("The CNN result is a screening suggestion. The agent does not confirm a diagnosis or prescribe pesticides.")
+
+    assessment = st.session_state.get("assessment_result")
+    if assessment and assessment.get("prediction"):
+        result_name = assessment.get("advice", {}).get(
+            "title", assessment["prediction"].replace("___", " — ").replace("_", " ")
+        )
+        result_col, score_col = st.columns(2)
+        result_col.metric("Latest CNN result", result_name)
+        score = assessment.get("score")
+        score_col.metric("CNN score (uncalibrated)", f"{score:.1%}" if isinstance(score, (float, int)) else "—")
+        st.caption(f"Crop entered: {assessment.get('crop', 'Not specified')}. The score is not a calibrated probability or a confirmed diagnosis.")
+        alternatives = assessment.get("top_results", [])
+        if alternatives:
+            st.markdown("**Other likely classes**")
+            st.dataframe(alternatives, hide_index=True, use_container_width=True)
+    else:
+        st.info("No CNN result is attached to this chat yet. Run an image assessment first; the result and score will appear here.")
+
+    if st.button("Clear chat", key="clear_crop_chat"):
+        st.session_state.pop("crop_chat_messages", None)
+        st.rerun()
+
+    messages = st.session_state.setdefault(
+        "crop_chat_messages",
+        [{"role": "assistant", "content": "Hello! I can explain the current CNN result, its score, photo tips, and cautious next steps. What would you like to ask?"}],
+    )
+    for message in messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    if assessment and assessment.get("prediction"):
+        st.caption("Quick questions")
+        quick_cols = st.columns(3)
+        quick_questions = (
+            ("Explain my result", "What does my CNN result mean?"),
+            ("What should I do next?", "What safe next steps should I take for this result?"),
+            ("Explain the score", "What does the CNN score mean?"),
+        )
+        for col, (label, question) in zip(quick_cols, quick_questions):
+            if col.button(label, key=f"quick_crop_question_{label}", use_container_width=True):
+                st.session_state["crop_chat_prompt"] = question
+                st.rerun()
+
+    prompt = st.chat_input("Ask about a crop or assessment…", key="crop_assistant_input")
+    prompt = prompt or st.session_state.pop("crop_chat_prompt", None)
+    if prompt:
+        messages.append({"role": "user", "content": prompt})
+        metrics = None
+        if METRICS_PATH.exists():
+            try:
+                metrics = json.loads(METRICS_PATH.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                metrics = None
+        response = answer_crop_question(prompt, assessment, metrics)
+        messages.append({"role": "assistant", "content": response})
+        st.rerun()
 
 
 def render_about(profile: dict[str, str], page: str) -> None:
     if page == "How it works":
         st.markdown('<div class="eyebrow">About this prototype</div>', unsafe_allow_html=True)
-        st.title("How AgroShield works")
-        st.markdown("The workspace validates and resizes your image, extracts visual features, and passes them to a Random Forest model trained on labeled PlantVillage images.")
-        st.code("Leaf image → RGB preprocessing → color and texture features → disease class → general guidance")
+        st.title("How Agrosheild works")
+        st.markdown("The workspace validates the leaf photo and passes it to a fine-tuned ResNet18 convolutional neural network (CNN) trained on labeled PlantVillage images.")
+        st.code("Leaf image → resize and normalize → ResNet18 CNN → disease class → general guidance")
         st.subheader("Model and evaluation")
         if METRICS_PATH.exists():
             try:
@@ -397,10 +500,12 @@ def main() -> None:
     brand()
     if page == "New assessment":
         render_assessment(profile)
+    elif page == "Crop agent":
+        render_crop_assistant(profile)
     else:
         render_about(profile, page)
     st.divider()
-    st.caption("AgroShield AI is an academic prototype. Guidance is general information, not a pesticide prescription. Confirm diagnosis and treatment locally before taking action.")
+    st.caption("Agrosheild is an academic prototype. Guidance is general information, not a pesticide prescription. Confirm diagnosis and treatment locally before taking action.")
 
 
 main()

@@ -1,15 +1,18 @@
-# AgroShield AI
+# Agrosheild
 
-AgroShield AI is a Streamlit prototype for plant leaf disease screening. Users create an account or sign in, open a private workspace, upload a leaf image, and describe the crop and symptoms. If a trained model is present, the app returns a predicted dataset class and cautious general guidance.
+Agrosheild is a Streamlit prototype for plant leaf disease screening. Users create an account or sign in, open a private workspace, upload a leaf image, and describe the crop and symptoms. If a trained model is present, the app returns a predicted dataset class and cautious general guidance.
 
 ## Features
 
 - Email verification by six-digit, expiring code before an account can sign in
 - Registration and sign-in with salted PBKDF2 password hashes
 - Responsive workspace with image upload and crop/symptom description
-- Image validation, RGB preprocessing, and disease classification
+- Image validation, RGB preprocessing, and ResNet18 CNN disease classification
+- Tool-grounded crop assessment agent with CNN result context and safe next steps
 - General next steps and downloadable assessment summary
 - No image or assessment history is saved; the active session holds the uploaded image and notes
+
+The crop agent combines the CNN result, top classes, and curated local advice. It uses built-in guided replies and does not require a separate generative model or Ollama installation.
 
 ## Run locally on Windows
 
@@ -21,6 +24,8 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements.txt
+# Optional: use the NVIDIA GPU for training (RTX 2050 and compatible CUDA 12.8 driver)
+python -m pip install torch==2.11.0+cu128 torchvision==0.26.0+cu128 --index-url https://download.pytorch.org/whl/cu128
 python -m streamlit run app.py
 ```
 
@@ -43,16 +48,18 @@ Use an app password or provider-issued SMTP credential; do not use or commit you
 
 ## Model and dataset
 
-The trained model is not included in this repository because it is about 202 MB. The PlantVillage archive is also excluded because it is about 868 MB. To create a local model, download the [Plant Leaf Diseases Dataset](https://data.mendeley.com/datasets/tywbtsjrjv/1) and train it:
+The current trained CNN checkpoint and evaluation metrics are included in `artifacts/`, so predictions are available immediately after deployment. To retrain the model, download the [Plant Leaf Diseases Dataset](https://data.mendeley.com/datasets/tywbtsjrjv/1), extract it under `data/raw`, and run:
 
 ```powershell
 python scripts\download_plantvillage.py
-python scripts\train_model.py --data-dir data\raw
+python scripts\train_cnn.py --data-dir data\raw --epochs 4
 ```
 
-The recorded baseline used 18,410 images across 39 classes, with a stratified 80/20 split. It achieved 89.11% accuracy and 0.8899 macro F1 on a 3,682-image holdout. See `artifacts/metrics.json` and `artifacts/confusion_matrix.csv` for the detailed report.
+Training uses an ImageNet-pretrained ResNet18 CNN, image augmentation, and stratified training/validation/test splits. By default it samples up to 250 images per class (balanced across 39 classes) to keep training practical on a laptop; use `--max-per-class 0` to train on every image. The first run downloads pretrained weights. The trained model is saved as `artifacts/agroshield_cnn.pt`; evaluation metrics and the confusion matrix are saved as `artifacts/cnn_metrics.json` and `artifacts/cnn_confusion_matrix.csv`. The Streamlit app loads this CNN for uploaded-image predictions.
 
-The model is a scikit-learn Random Forest over handcrafted HSV color histograms and spatial gradient-orientation histograms. Its class score is not a calibrated probability. The benchmark does not establish accuracy on field photographs, and severity is not predicted.
+The current trained run used 9,652 images across 39 classes, split into 6,756 training, 1,429 validation, and 1,467 held-out test images. It achieved 97.68% accuracy and 0.9769 macro F1 on the test split. This is a PlantVillage benchmark result, not verified field performance.
+
+Softmax scores shown by the app are not calibrated probabilities. A PlantVillage holdout score does not establish accuracy on field photographs, and severity is not predicted.
 
 ## Account storage and deployment
 

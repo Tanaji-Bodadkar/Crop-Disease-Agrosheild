@@ -1,4 +1,5 @@
 .venv/
+.cache/
 __pycache__/
 *.py[cod]
 .streamlit/secrets.toml
@@ -12,3 +13,6 @@ data/*.db-*
 artifacts/*.joblib
 artifacts/*.json
 artifacts/*.csv
+
+!artifacts/cnn_metrics.json
+!artifacts/cnn_confusion_matrix.csv
