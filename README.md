@@ -1,5 +1,5 @@
 # Agrosheild
-
+https://crop-disease-agrosheild.streamlit.app/
 Agrosheild is a Streamlit prototype for plant leaf disease screening. Users create an account or sign in, open a private workspace, upload a leaf image, and describe the crop and symptoms. If a trained model is present, the app returns a predicted dataset class and cautious general guidance.
 
 ## Features
